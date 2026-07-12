@@ -78,6 +78,16 @@ def bin_plot(args):
 	else:
 		data_y_f = data_y
 
+	if (args.s):
+		print("cut data start [{} :]".format(args.s))
+		data_x_f = data_x_f[args.s:]
+		data_y_f = data_y_f[args.s:]
+
+	if (args.e):
+		print("cut data end [: {}]".format(args.e))
+		data_x_f = data_x_f[:args.e]
+		data_y_f = data_y_f[:args.e]
+
 	if (args.v):
 		print("--- x, y data in float32 ---")
 		print("x:", data_x_f)
@@ -108,15 +118,21 @@ def init_param(args):
 		help="input x binary filename")
 	parser.add_argument("-y", type=str, required=True, default="y.bin",
 		help="input y binary filename")
-	parser.add_argument("-fx", type=str, required=False, default="uint8",
+	parser.add_argument("-fx", type=str, required=False, default="float32",
 		help="input x binary format: " + dtype_str)
-	parser.add_argument("-fy", type=str, required=False, default="uint8",
+	parser.add_argument("-fy", type=str, required=False, default="float32",
 		help="input x binary format: " + dtype_str)
 	parser.add_argument("-qx", type=int, required=False,
 		help="Q value for x quantized data")
 	parser.add_argument("-qy", type=int, required=False,
 		help="Q value for y quantized data")
-	parser.add_argument("-o", type=str, required=False, default="o.jgp",
+
+	parser.add_argument("-s", type=int, required=False,
+		help="start. data = data[s:]")
+	parser.add_argument("-e", type=int, required=False,
+		help="end. data = data[:e]")
+
+	parser.add_argument("-o", type=str, required=False, default="o.jpg",
 		help="out image filename (jpg, png), do not imshow in live if gen output image")
 	parser.add_argument("-v", action='store_true', required=False,
 		help="verbose log like show data")

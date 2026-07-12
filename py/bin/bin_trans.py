@@ -5,10 +5,17 @@ import numpy as np
 
 def transform(args):
 	data = np.fromfile(args.i, dtype=args.f)
+	a_shape = args.s.split(',')
+	b_shape = args.t.split(',')
+	a_N, a_C, a_H, a_W = list(map(int, a_shape))
+	b_N, b_C, b_H, b_W = list(map(int, b_shape))
 
-	## customize code: change reshape and transpose param
-	#dst = data.reshape(12, 2, 38, 64).transpose(1, 0, 2, 3)
-	dst = data.reshape(2, 208, 208).transpose(1, 2, 0)
+	data = data.reshape(a_N, a_C, a_H, a_W)
+	print("input shape: ", data.shape)
+	print("transpose parmas: ({:d}, {:d}, {:d}, {:d})".format(b_N, b_C, b_H, b_W))
+
+	dst = data.transpose(b_N, b_C, b_H, b_W)
+	print("output shape:", dst.shape)
 
 	dst.tofile(args.o)
 	print('Transpose File: {} -> {}'.format(args.i, args.o))
@@ -21,8 +28,13 @@ def init_param(args):
 		help="input image filename")
 	parser.add_argument("-o", type=str, required=True, default="output.bin",
 		help="ouput binary filename")
-	parser.add_argument("-f", type=str, required=True, default="fp32",
+	parser.add_argument("-f", type=str, required=True, default="float32",
 		help="dest binary format: " + dtype_str)
+
+	parser.add_argument("-s", type=str, required=True,
+		help="input shape. (N, C, H, W)")
+	parser.add_argument("-t", type=str, required=True,
+		help="transpose params. (0, 1, 2, 3)")
 
 	return parser.parse_args(args)
 

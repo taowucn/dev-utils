@@ -113,17 +113,23 @@ def pearson_correlation(f1, f2):
     r = max(min(r, 1.0), -1.0)
     return r
 
+def KL_divergence(p, q):
+	KL = p * np.log(p/q)
+	KL_sum = KL.sum()
+	return KL_sum
+
 def bin_err(args):
 	data_a = np.fromfile(args.f1, dtype=args.t1)
 	data_b = np.fromfile(args.f2, dtype=args.t2)
+	print(args.f1, args.f2)
 
 	if (data_a.dtype) == (data_b.dtype):
-		print("Two files use the same dtype: ", args.t1, args.t2)
+		print("Two files use the same dtype: ", args.t1, args.t2, ", shape: ", data_a.shape, data_b.shape)
 		if not check_fsize(data_a, data_b):
 			print("Two files size different, error")
 			return
 	else:
-		print("Two files use different dtype: ", args.t1, args.t2)
+		print("Two files use different dtype: ", args.t1, args.t2, ", shape: ", data_a.shape, data_b.shape)
 
 	data_fa = data_a.astype(np.float32)
 	data_fb = data_b.astype(np.float32)
@@ -147,16 +153,18 @@ def bin_err(args):
 	cosine_distance_err = cosine_distance(data_fa, data_fb)
 	pearson_correlation_err = pearson_correlation(data_fa, data_fb)
 	psnr_err = psnr(data_fa, data_fb)
+	#kl_divergen = KL_divergence(data_fa, data_fb)
 
 	## print result
 	print("max_abs_err:", max_abs_err, ", at position: ", pos_abs_err, ", left - right:", data_fa[pos_abs_err], "-", data_fb[pos_abs_err])
 	#print("pos_abs_err:", pos_abs_err)
 	#print("relative_err:", relative_err)
-	print("max_rel_err:", max_relative_err, ", at postion: ", pos_max_rtl_err, ", left - right:", data_fa[pos_max_rtl_err], "-", data_fb[pos_max_rtl_err])
+	print("max_rel_err:", max_relative_err, ", at position: ", pos_max_rtl_err, ", left - right:", data_fa[pos_max_rtl_err], "-", data_fb[pos_max_rtl_err])
 	print("avg_rel_err:", avg_relative_err)
 	print("cosine_dist:", cosine_distance_err)
 	print("pearson:", pearson_correlation_err)
 	print("psnr:", psnr_err)
+	#print("KL_divergence:", kl_divergen)
 
 def init_param(args):
 	parser = argparse.ArgumentParser(description="Compare two binary file error with corrsponding format")
@@ -164,9 +172,9 @@ def init_param(args):
 		help="input binary 1 filename")
 	parser.add_argument("-f2", type=str, required=True, default="b.bin",
 		help="input binary 2 filename")
-	parser.add_argument("-t1", type=str, required=True, default="fp32",
+	parser.add_argument("-t1", type=str, required=False, default="float32",
 		help="input binary 1 format: " + dtype_str)
-	parser.add_argument("-t2", type=str, required=True, default="fp32",
+	parser.add_argument("-t2", type=str, required=False, default="float32",
 		help="input binary 2 format: " + dtype_str)
 	parser.add_argument("-q1", type=int, required=False,
 		help="Q value for quantized data 1")

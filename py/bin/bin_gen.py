@@ -9,13 +9,16 @@ def bin_gen(args):
 	if (args.c):
 		data = np.arange(args.n, dtype=args.f)
 	elif (args.a):
-		value = float(args.g)
+		value = float(args.a)
 		data = np.linspace(-value, value, args.n)
 	elif (args.s):
 		data = np.random.randn(args.n)
 	elif (args.d):
 		value = float(args.d)
 		data = np.ones(args.n, dtype=args.f) * value
+
+	if (args.q):
+		data = data * pow(2, (args.q))
 
 	data = data.astype(dtype=args.f)
 	data.tofile(args.o)
@@ -34,8 +37,10 @@ def init_param(args):
 	parser = argparse.ArgumentParser(description="Generate binary file with specific format and data")
 	parser.add_argument("-o", type=str, required=True, default="output.bin",
 		help="ouput binary filename")
-	parser.add_argument("-f", type=str, required=True, default="fp32",
+	parser.add_argument("-f", type=str, required=True, default="float32",
 		help="binary format: " + dtype_str)
+	parser.add_argument("-q", type=int, required=False,
+		help="Q value for quantized data")
 	parser.add_argument("-d", type=str, required=False, default="1",
 		help="binary data value")
 	parser.add_argument("-c", action="store_true", default=False,
