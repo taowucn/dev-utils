@@ -13,7 +13,7 @@ device = "cpu"
 print(f"Using {device} device")
 
 #pth_file = "pth/ops_softmax.pth"
-onnx_model_file = "onnx/ops_muladd.onnx"
+onnx_model_file = "onnx/ops_muladdi.onnx"
 
 # Define model
 class NeuralNetwork(nn.Module):
@@ -26,6 +26,27 @@ class NeuralNetwork(nn.Module):
         o = torch.mul(x, 2)
         output = torch.add(o, 1)
         return output
+
+
+def export_to_pt2():
+    model = NeuralNetwork().to(device)
+    print(model)
+
+    model.eval()
+    input_names = ["input0"]
+    output_names = ["output"]
+    x = torch.arange(16).reshape(1, 1, 1, 16)
+
+    outs = model(x)
+    #print("input0: ", x)
+    #print("input1: ", y)
+    print("Pytorch out:", outs)
+
+    out_model = "out_pt/op_muladdi.pt2"
+    ep = torch.export.export(model, (x,))
+    torch.export.save(ep, out_model)
+    print(f"Export pt2 : {out_model}")
+
 
 def export_to_onnx():
     model = NeuralNetwork().to(device)
@@ -64,5 +85,7 @@ def infer_onnx():
         #arr.tofile(out_fn)
         #print("  save to bin file:", out_fn)
 
+
+export_to_pt2()
 export_to_onnx()
 infer_onnx()
