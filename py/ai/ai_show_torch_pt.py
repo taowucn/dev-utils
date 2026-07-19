@@ -58,6 +58,9 @@ def show_model(args):
 	for i, info in enumerate(input_info):
 		print(f"input {i}: shape={info['shape']}, dtype={info['dtype']}, device={info['device']}")
 
+	print("\n===== Fix Graph =====")
+	loaded_ep.graph.print_tabular()
+
 	if args.v:
 		print("="*60)
 		print(loaded_ep)
