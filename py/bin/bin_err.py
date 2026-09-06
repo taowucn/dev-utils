@@ -9,6 +9,10 @@ from scipy import spatial as sp
 
 dtype_str = "<float64|float32|float16|uint64|int64|uint32|int32|uint16|int16|uint8|int8>"
 
+dtype_ext_str = "<bf16|fp8_e4m3|fp8_e5m2> "
+EXT_DTYPES = {"bf16", "fp8_e4m3", "fp8_e5m2"}
+dconv_fpx = None
+
 def check_fsize(f1, f2):
 	if (len(f1) != len(f2)):
 		print("Two file size: ", len(f1), len(f2))
@@ -118,10 +122,34 @@ def KL_divergence(p, q):
 	KL_sum = KL.sum()
 	return KL_sum
 
+# load data in any format and convert it to float32
+def load_as_float32(filepath, dtype):
+	if dtype == "bf16":
+		raw = np.fromfile(filepath, dtype=np.uint16)
+		return np.vectorize(dconv_fpx.bf16_to_float32, otypes=[np.float32])(raw)
+	if dtype == "fp8_e4m3":
+		raw = np.fromfile(filepath, dtype=np.uint8)
+		return np.vectorize(dconv_fpx.fp8_e4m3_to_float32, otypes=[np.float32])(raw)
+	if dtype == "fp8_e5m2":
+		raw = np.fromfile(filepath, dtype=np.uint8)
+		return np.vectorize(dconv_fpx.fp8_e5m2_to_float32, otypes=[np.float32])(raw)
+	return np.fromfile(filepath, dtype=dtype).astype(np.float32)
+
 def bin_err(args):
-	data_a = np.fromfile(args.f1, dtype=args.t1)
-	data_b = np.fromfile(args.f2, dtype=args.t2)
+	data_type_a = dtype=args.t1
+	data_type_b = dtype=args.t2
+
+	if data_type_a in EXT_DTYPES or data_type_b in EXT_DTYPES:
+		print("import data_conv_fp_ext")
+		global dconv_fpx
+		import data_conv_fp_ext as dconv_fpx
+
+	data_a = load_as_float32(args.f1, data_type_a)
+	data_b = load_as_float32(args.f2, data_type_b)
+	# data_a = np.fromfile(args.f1, dtype=args.t1)
+	# data_b = np.fromfile(args.f2, dtype=args.t2)
 	print(args.f1, args.f2)
+	print(data_type_a, data_type_b)
 
 	if (data_a.dtype) == (data_b.dtype):
 		print("Two files use the same dtype: ", args.t1, args.t2, ", shape: ", data_a.shape, data_b.shape)
@@ -167,15 +195,16 @@ def bin_err(args):
 	#print("KL_divergence:", kl_divergen)
 
 def init_param(args):
-	parser = argparse.ArgumentParser(description="Compare two binary file error with corrsponding format")
+	parser = argparse.ArgumentParser(description="Compare two binary file error with corrsponding format "
+									"(1.0.0), support bf16, fp8")
 	parser.add_argument("-f1", type=str, required=True, default="a.bin",
 		help="input binary 1 filename")
 	parser.add_argument("-f2", type=str, required=True, default="b.bin",
 		help="input binary 2 filename")
 	parser.add_argument("-t1", type=str, required=False, default="float32",
-		help="input binary 1 format: " + dtype_str)
+		help="input binary 1 format: " + dtype_str + dtype_ext_str)
 	parser.add_argument("-t2", type=str, required=False, default="float32",
-		help="input binary 2 format: " + dtype_str)
+		help="input binary 2 format: " + dtype_str + dtype_ext_str)
 	parser.add_argument("-q1", type=int, required=False,
 		help="Q value for quantized data 1")
 	parser.add_argument("-q2", type=int, required=False,

@@ -7,13 +7,11 @@ import matplotlib.pyplot as plt
 dtype_str = "<float64|float32|float16|uint64|int64|uint32|int32|uint16|int16|uint8|int8>"
 
 def bin_histgram(args):
-	data_x = np.fromfile(args.x, dtype=args.fx)
+	data_x = np.fromfile(args.i, dtype=args.f)
+	data_x_f = data_x.astype(np.float32)
 
-	if (args.qx):
-		data_x_f = data_x.astype(np.float32)
-		data_x_f = data_x_f/pow(2, args.qx)
-	else:
-		data_x_f = data_x
+	if (args.q):
+		data_x_f = data_x_f/pow(2, args.q)
 
 	if (args.v):
 		print("--- x data in float32 ---")
@@ -38,7 +36,11 @@ def bin_histgram(args):
 		print("var_value:", var_value)
 
 	if (args.m == "numpy"):
-		_ = plt.hist(data_x_f, bins='auto')  # arguments are passed to np.histogram
+		hist, bin_edges = np.histogram(data_x_f)  # arguments are passed to np.histogram
+		print("hist:", hist)
+		print("bin_edges:", bin_edges)
+	elif (args.m == "plt"):
+		hist = plt.hist(data_x_f)
 	elif (args.m == "seaborn"):
 		import seaborn as sns
 		#sns.set(style="darkgrid")
@@ -47,26 +49,28 @@ def bin_histgram(args):
 		#sns.distplot(data_x_f)
 		sns.displot(data_x_f, kde=True)
 	else:
-		raise UserWarning("Invalid methd, should be numpy, opencv")
+		raise UserWarning("Invalid methd, should be numpy, seaborn")
 
-	if (args.o):
-		print("save image as:", args.o)
-		plt.savefig(args.o)
-	else:
-		print("show image in live")
-		plt.show()
+	# show result
+	if (args.m != 'numpy'):
+		if (args.o):
+			print("save image as:", args.o)
+			plt.savefig(args.o)
+		else:
+			print("show image in live")
+			plt.show()
 
 def init_param(args):
 	parser = argparse.ArgumentParser(description="Statis binary file in histgram with specific format, 1.0.0")
-	parser.add_argument("-x", type=str, required=True, default="x.bin",
-		help="input x binary filename")
-	parser.add_argument("-fx", type=str, required=False, default="uint8",
-		help="input x binary format: " + dtype_str)
-	parser.add_argument("-qx", type=int, required=False,
-		help="Q value for x quantized data")
+	parser.add_argument("-i", type=str, required=True, default="in.bin",
+		help="input binary filename")
+	parser.add_argument("-f", type=str, required=False, default="float32",
+		help="input binary format: " + dtype_str)
+	parser.add_argument("-q", type=int, required=False,
+		help="Q value for quantized data")
 
 	parser.add_argument("-m", type=str, required=False, default="seaborn",
-		help="statis data method: numpy, seaborn")
+		help="statis data method: numpy, plt, seaborn")
 	parser.add_argument("-s", action='store_true', required=False, default=True,
 		help="statis data (max, min, avg, std etc.)")
 	parser.add_argument("-v", action='store_true', required=False,
