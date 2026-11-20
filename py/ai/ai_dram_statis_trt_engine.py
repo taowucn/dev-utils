@@ -26,11 +26,13 @@ Notes:
   - sudo is required (ERR_NVGPUCTRPERM); pass SUDO_PW=<pw> to avoid the prompt
   - --cache-control none (default) keeps realistic cache behaviour; "all"
     flushes L2 before every kernel and inflates DRAM reads ~3.5x
-  - the first inference under ncu is cold-cache; steady-state numbers need
-    -iters >= 3 and reading the per-iteration breakdown
+    - the capture worker executes exactly -iters inferences, without warmup
+    - the separate MCC probe is not included in the capture statistics
 """
 import argparse
 import csv as csvmod
+import ctypes
+import math
 import os
 import shutil
 import subprocess
@@ -53,6 +55,7 @@ METRICS = ",".join([DUR, MCC_RD, MCC_WR])
 NCU_CANDIDATES = [
     "/usr/local/NVIDIA-Nsight-Compute/ncu",
     "/usr/local/cuda/bin/ncu",  ## Old Version
+    "ncu",
 ]
 
 TRT_LOGGER = trt.Logger(trt.Logger.ERROR)
@@ -74,17 +77,28 @@ def worker(args):
     """Minimal inference runner executed UNDER ncu (the profiled target).
 
     Reuses the ai_infer_trt_engine.py logic: deserialize -> resolve dynamic
-    shapes -> random input -> warmup 1 -> N timed-free iterations. No printing
+    shapes -> random input -> N iterations without warmup. No printing
     noise, no output dump: ncu only cares about the kernel launches.
     """
     print("--------------------------------")
     print("Runtime Inferece: ", args.model)
+    plugin_handles = []
+    for plugin in args.plugin:
+        try:
+            plugin_handles.append(ctypes.CDLL(plugin, mode=ctypes.RTLD_GLOBAL))
+        except OSError as error:
+            raise SystemExit(f"failed to load plugin {plugin}: {error}") from error
+    trt.init_libnvinfer_plugins(TRT_LOGGER, "")
     runtime = trt.Runtime(TRT_LOGGER)
     with open(args.model, "rb") as f:
         engine = runtime.deserialize_cuda_engine(f.read())
     if engine is None:
         raise SystemExit("failed to deserialize engine: {}".format(args.model))
     context = engine.create_execution_context()
+    if context is None:
+        raise SystemExit(
+            "failed to create execution context; check the TensorRT errors above "
+            "and use -plugin /path/to/plugin.so for required custom plugins")
 
     in_names = [engine.get_tensor_name(i) for i in range(engine.num_io_tensors)
                 if engine.get_tensor_mode(engine.get_tensor_name(i))
@@ -101,30 +115,41 @@ def worker(args):
             context.set_input_shape(name, opt_shape)
 
     d_addrs = {}
+    feeds = {}
+    if args.inputs:
+        with np.load(args.inputs, allow_pickle=False) as archive:
+            feeds = {name: archive[name] for name in archive.files}
+    rng = np.random.default_rng(0)
     stream = cu(cudart.cudaStreamCreate())
     for name in in_names + out_names:
         shape = context.get_tensor_shape(name)
+        if any(dimension < 0 for dimension in shape):
+            raise SystemExit(f"unresolved shape for {name}: {tuple(shape)}")
         dtype = trt.nptype(engine.get_tensor_dtype(name))
         nbytes = int(np.prod(shape)) * np.dtype(dtype).itemsize
-        d = cu(cudart.cudaMalloc(nbytes))
+        d = cu(cudart.cudaMalloc(max(nbytes, 1)))
         d_addrs[name] = d
-        context.set_tensor_address(name, d)
-
-    # random input, H2D once
-    in_name = in_names[0]
-    in_shape = context.get_tensor_shape(in_name)
-    in_dtype = trt.nptype(engine.get_tensor_dtype(in_name))
-    x = np.random.randn(*in_shape).astype(in_dtype)
-    cu(cudart.cudaMemcpy(d_addrs[in_name], x.ctypes.data, x.nbytes,
-                         cudart.cudaMemcpyKind.cudaMemcpyHostToDevice))
-
-    # warmup (uncounted) then the profiled iterations
-    context.execute_async_v3(stream)
-    cu(cudart.cudaStreamSynchronize(stream))
+        if not context.set_tensor_address(name, d):
+            raise SystemExit(f"failed to bind tensor {name}")
+        if name in in_names and nbytes:
+            if name in feeds:
+                data = np.ascontiguousarray(feeds[name], dtype=dtype)
+                if tuple(data.shape) != tuple(shape):
+                    raise SystemExit(f"input {name}: expected {tuple(shape)}, got {data.shape}")
+            elif np.issubdtype(dtype, np.floating):
+                data = rng.standard_normal(tuple(shape)).astype(dtype)
+            elif np.issubdtype(dtype, np.integer) or np.issubdtype(dtype, np.bool_):
+                data = rng.integers(1, 10, size=tuple(shape)).astype(dtype)
+            else:
+                raise SystemExit(f"unsupported random input dtype for {name}: {dtype}")
+            cu(cudart.cudaMemcpy(d, data.ctypes.data, data.nbytes,
+                                cudart.cudaMemcpyKind.cudaMemcpyHostToDevice))
 
     for _ in range(args.iters):
-        context.execute_async_v3(stream)
+        if not context.execute_async_v3(stream):
+            raise SystemExit("TensorRT execution failed; check plugin errors and supply valid control inputs with -inputs data.npz")
     cu(cudart.cudaStreamSynchronize(stream))
+    print("Inference done: {} iters".format(args.iters))
 
     for d in d_addrs.values():
         cu(cudart.cudaFree(d))
@@ -157,7 +182,7 @@ def find_ncu(explicit=None):
     raise SystemExit("no ncu found; install standalone Nsight Compute 2026.4")
 
 
-def probe_mcc(ncu_bin, self_py, model):
+def probe_mcc(ncu_bin, self_py, model, plugins=(), inputs=""):
     """One-kernel probe: can this ncu read MCC counters on this GPU?"""
     cmd = sudo_prefix() + [
         ncu_bin, "--target-processes", "all", "--csv",
@@ -166,12 +191,35 @@ def probe_mcc(ncu_bin, self_py, model):
         self_py, os.path.abspath(__file__), "--worker",
         "-model", model, "-iters", "1",
     ]
+    for plugin in plugins:
+        cmd.extend(["-plugin", plugin])
+    if inputs:
+        cmd.extend(["-inputs", inputs])
     print("CMD:", subprocess.list2cmdline(cmd))
     r = subprocess.run(cmd, capture_output=True, text=True)
     out = r.stdout or ""
-    if "nan" in out or "n/a" in out:
-        return False
-    return any(ln.lstrip().startswith('"') for ln in out.splitlines())
+    diagnostics = "\n".join(part.strip() for part in (out, r.stderr or "")
+                            if part.strip())
+    if r.returncode != 0:
+        raise SystemExit(
+            "MCC probe failed rc={}; this does not establish that MCC counters "
+            "are unavailable.\n{}".format(r.returncode, diagnostics))
+    lines = [line for line in out.splitlines() if line.lstrip().startswith('"')]
+    kernels = {}
+    for row in csvmod.DictReader(lines):
+        if row.get("Metric Name") in (DUR, MCC_RD, MCC_WR):
+            kernels.setdefault(row.get("ID"), {})[row["Metric Name"]] = num(
+                row.get("Metric Value"))
+    if not kernels:
+        raise SystemExit(
+            "MCC probe produced no requested metric rows; check the profiler "
+            "and worker output below.\n{}".format(diagnostics))
+    if any(all(values.get(metric) is not None and math.isfinite(values[metric])
+               for metric in (DUR, MCC_RD, MCC_WR))
+           for values in kernels.values()):
+        return True
+    log("MCC probe returned missing or non-finite metrics:\n" + diagnostics)
+    return False
 
 
 def capture(ncu_bin, self_py, args, raw_csv):
@@ -183,6 +231,10 @@ def capture(ncu_bin, self_py, args, raw_csv):
         self_py, os.path.abspath(__file__), "--worker",
         "-model", args.model, "-iters", str(args.iters),
     ]
+    for plugin in args.plugin:
+        cmd.extend(["-plugin", plugin])
+    if args.inputs:
+        cmd.extend(["-inputs", args.inputs])
     log("run: " + " ".join(cmd[:10]) + " ...")
     with open(raw_csv, "w") as f:
         print("CMD:", subprocess.list2cmdline(cmd))
@@ -241,14 +293,11 @@ def short_name(name):
 
 
 def report(kernels, args):
-    n_per_iter = None
-    # kernels are in launch order: warmup(1) + iters(N); group by 6-ish is
-    # engine-specific, so just report warmup vs steady split by counting
     total = len(kernels)
-    log("captured {} kernel launches (1 warmup iter + {} profiled iters)".format(
+    log("captured {} kernel launches ({} profiled iters, no warmup)".format(
         total, args.iters))
 
-    print("\n== Per-kernel DRAM traffic (first iteration, cold cache) ==")
+    print("\n== Per-kernel DRAM traffic (all profiled iterations) ==")
     print("{:>4} {:<26} {:>9} {:>9} {:>9} {:>9}".format(
         "id", "kernel", "dur_us", "rd_MB", "wr_MB", "tot_MB"))
     for k in kernels:
@@ -256,7 +305,6 @@ def report(kernels, args):
             k["id"], short_name(k["name"]), k["dur_us"],
             k["rd_mb"], k["wr_mb"], k["rd_mb"] + k["wr_mb"]))
 
-    # aggregate: warmup = first chunk, steady = rest
     rd_all = sum(k["rd_mb"] for k in kernels)
     wr_all = sum(k["wr_mb"] for k in kernels)
     dur_all = sum(k["dur_us"] for k in kernels)
@@ -272,7 +320,7 @@ def report(kernels, args):
         print("  avg DRAM bandwidth: {:.1f} GB/s ({:.1f}% of {:.0f} peak)".format(
             gbs, gbs / PEAK_GBS * 100, PEAK_GBS))
     per_iter = (rd_all + wr_all) / max(args.iters, 1)
-    print("  per-inference avg: {:.2f} MB (includes 1 cold-cache iteration)".format(
+    print("  per-inference avg: {:.2f} MB (no warmup)".format(
         per_iter))
 
     if args.csv:
@@ -293,8 +341,13 @@ def init_param(argv):
         description="Per-kernel DRAM r/w statistics for a TRT engine (Thor) Version: 1.0.0")
     ap.add_argument("-model", type=str, required=True,
                     help="TensorRT engine file (.engine/.plan)")
-    ap.add_argument("-iters", type=int, default=3,
-                    help="profiled inference iterations (default 3)")
+    ap.add_argument("-plugin", action="append", default=[],
+                    type=os.path.abspath,
+                    help="custom TensorRT plugin library (.so); repeat for multiple libraries")
+    ap.add_argument("-inputs", default=None, type=os.path.abspath,
+                    help="NPZ archive of input arrays keyed by tensor name, including plugin control inputs")
+    ap.add_argument("-iters", type=int, default=1,
+                    help="inference iterations, without warmup (default 1)")
     ap.add_argument("-csv", type=str, default="",
                     help="save per-kernel table to this CSV")
     ap.add_argument("-ncu", type=str, default="",
@@ -322,11 +375,13 @@ def main():
     log("python = {}".format(self_py))
 
     log("probing MCC counters with 1 kernel...")
-    if not probe_mcc(ncu_bin, self_py, args.model):
+    if not probe_mcc(ncu_bin, self_py, args.model, args.plugin, args.inputs):
         raise SystemExit(
-            "{} cannot read mcc__dram_* (all nan/n-a).\n"
-            "Use the STANDALONE Nsight Compute 2026.4:\n"
-            "  -ncu /usr/local/NVIDIA-Nsight-Compute/ncu".format(ncu_bin))
+            "{} did not return a complete set of finite duration/MCC metrics.\n"
+            "If standalone Nsight Compute 2026.4 still returns nan/n-a on Thor, "
+            "these counters may be unavailable on this platform.\n"
+            "tegrastats EMC can estimate aggregate DRAM bandwidth, but cannot "
+            "provide per-kernel read/write byte counts.".format(ncu_bin))
     log("MCC probe OK (DRAM counters readable)")
 
     tmpdir = tempfile.mkdtemp(prefix="ai_dram_")
